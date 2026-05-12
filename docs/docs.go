@@ -1,0 +1,257 @@
+package docs
+
+const SwaggerHTML = `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>analysis-api swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: '/swagger/openapi.json',
+		  dom_id: '#swagger-ui',
+		  persistAuthorization: true
+    })
+  </script>
+</body>
+</html>
+`
+
+const OpenAPIJSON = `{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "analysis-api-service",
+    "version": "1.0.0",
+    "description": "API для запуска анализа, просмотра статических паттернов и debug-запуска статического анализатора."
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "summary": "Логин и получение JWT",
+        "description": "Возвращает JWT-токен для вызова защищённых ручек analysis-api. После этого нажми Authorize в Swagger и вставь токен без префикса Bearer.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "example": "admin@system.local" },
+                  "password": { "type": "string", "example": "admin" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "JWT token issued" },
+          "401": { "description": "Invalid credentials" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Проверка живости сервиса",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/analysis/upload": {
+      "post": {
+        "summary": "Загрузить C-файл и запустить анализ",
+		"description": "Загружает новый файл и создаёт задачу анализа. project_id опционален: если не передан, используется внутренний системный namespace. В ответе возвращается task c task_id и file_id.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+				"required": ["file"],
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+					"description": "Идентификатор проекта; можно не передавать"
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Исходный C-файл"
+                  },
+                  "l1_size_kb": { "type": "integer", "format": "int32" },
+                  "l1_line_size": { "type": "integer", "format": "int32" },
+                  "l1_associativity": { "type": "integer", "format": "int32" },
+                  "l2_size_kb": { "type": "integer", "format": "int32" },
+                  "l2_line_size": { "type": "integer", "format": "int32" },
+                  "l2_associativity": { "type": "integer", "format": "int32" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Analysis started; response contains created task with file_id and task_id" },
+          "400": { "description": "Bad request" },
+          "500": { "description": "Failed to start analysis" }
+        }
+      }
+    },
+    "/api/v1/analysis/files/{file_id}/analyze": {
+      "post": {
+        "summary": "Запустить анализ для уже загруженного файла",
+        "description": "Создаёт новую задачу анализа поверх существующего file_id без повторной загрузки файла. В ответе возвращается task c тем же file_id и новым task_id.",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "l1_size_kb": { "type": "integer", "format": "int32" },
+                  "l1_line_size": { "type": "integer", "format": "int32" },
+                  "l1_associativity": { "type": "integer", "format": "int32" },
+                  "l2_size_kb": { "type": "integer", "format": "int32" },
+                  "l2_line_size": { "type": "integer", "format": "int32" },
+                  "l2_associativity": { "type": "integer", "format": "int32" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Analysis started for existing file; response contains file_id and new task_id" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "File not found" },
+          "500": { "description": "Failed to start analysis" }
+        }
+      }
+    },
+    "/api/v1/analysis/tasks/{task_id}": {
+      "get": {
+        "summary": "Статус задачи",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Task status" },
+          "404": { "description": "Task not found" }
+        }
+      }
+    },
+    "/api/v1/analysis/tasks/{task_id}/static-patterns": {
+      "get": {
+        "summary": "Статические паттерны задачи",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Static patterns" },
+          "404": { "description": "Task not found" }
+        }
+      }
+    },
+    "/api/v1/analysis/tasks/{task_id}/aggregated": {
+      "get": {
+        "summary": "Агрегированные статические и динамические метрики",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Aggregated patterns" },
+          "404": { "description": "Task not found" }
+        }
+      }
+    },
+    "/api/v1/analysis/files/{file_id}/simulation-results": {
+      "get": {
+        "summary": "Полные результаты симуляции по файлу",
+        "description": "Возвращает последнюю задачу анализа для файла, общие cache-метрики и pattern-level результаты симуляции с misses по уровням кэша.",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "File simulation results with metrics and pattern-level cache misses" },
+          "404": { "description": "File or analysis results not found" }
+        }
+      }
+    },
+    "/api/v1/analysis/admin/debug/static-patterns": {
+      "post": {
+        "summary": "Синхронный debug-запуск статического анализатора",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Analyzer patterns" },
+          "400": { "description": "Bad request" },
+          "500": { "description": "Analyzer failed" }
+        }
+      }
+    }
+  }
+}`
