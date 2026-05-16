@@ -1,16 +1,47 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/diploma/analysis-api-service/internal/model"
 	"github.com/diploma/analysis-api-service/internal/repository"
 	"github.com/diploma/analysis-api-service/internal/usecase"
 	"github.com/gin-gonic/gin"
 )
+
+func writeAnalysisUploadError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigRequired):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigQuota):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigInvalidExt):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigInvalidJSON):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigTooLarge):
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+		return true
+	case errors.Is(err, usecase.ErrFileSoftDeleted):
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return true
+	default:
+		return false
+	}
+}
 
 type AnalysisHandler struct {
 	analysisUC *usecase.AnalysisUseCase
@@ -23,6 +54,7 @@ func NewAnalysisHandler(analysisUC *usecase.AnalysisUseCase, chRepo *repository.
 
 func (h *AnalysisHandler) Upload(c *gin.Context) {
 	projectID := c.PostForm("project_id")
+	userID := c.GetString("user_id")
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -31,14 +63,28 @@ func (h *AnalysisHandler) Upload(c *gin.Context) {
 	}
 	defer file.Close()
 
+	cacheConfigID := strings.TrimSpace(c.PostForm("cache_config_id"))
+
 	cacheProfile, err := parseCacheProfile(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	task, err := h.analysisUC.UploadAndAnalyze(c.Request.Context(), projectID, header.Filename, file, header.Size, cacheProfile)
+	task, err := h.analysisUC.UploadAndAnalyze(
+		c.Request.Context(),
+		userID,
+		projectID,
+		header.Filename,
+		file,
+		header.Size,
+		cacheConfigID,
+		cacheProfile,
+	)
 	if err != nil {
+		if writeAnalysisUploadError(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -47,6 +93,67 @@ func (h *AnalysisHandler) Upload(c *gin.Context) {
 		"message": "file uploaded, analysis started",
 		"task":    task,
 	})
+}
+
+func (h *AnalysisHandler) ListCacheConfigs(c *gin.Context) {
+	userID := c.GetString("user_id")
+	list, err := h.analysisUC.ListCacheSimulatorConfigs(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"configs": list})
+}
+
+func (h *AnalysisHandler) CreateCacheConfig(c *gin.Context) {
+	userID := c.GetString("user_id")
+	userRole := c.GetString("role")
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+	defer file.Close()
+
+	displayName := strings.TrimSpace(c.PostForm("name"))
+
+	cfg, err := h.analysisUC.CreateCacheSimulatorConfig(
+		c.Request.Context(),
+		userID,
+		userRole,
+		displayName,
+		header.Filename,
+		file,
+		header.Size,
+	)
+	if err != nil {
+		if writeAnalysisUploadError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"config": cfg})
+}
+
+func (h *AnalysisHandler) DeleteCacheConfig(c *gin.Context) {
+	userID := c.GetString("user_id")
+	id := strings.TrimSpace(c.Param("config_id"))
+
+	if err := h.analysisUC.DeleteCacheSimulatorConfig(c.Request.Context(), userID, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "configuration not found"})
+			return
+		}
+		if writeAnalysisUploadError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *AnalysisHandler) GetTaskStatus(c *gin.Context) {
@@ -215,6 +322,27 @@ func (h *AnalysisHandler) GetProjectTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 }
 
+func (h *AnalysisHandler) SoftDeleteFile(c *gin.Context) {
+	fileID := strings.TrimSpace(c.Param("file_id"))
+	userID := c.GetString("user_id")
+	role := c.GetString("role")
+
+	err := h.analysisUC.SoftDeleteFile(c.Request.Context(), userID, role, fileID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		if errors.Is(err, usecase.ErrFileDeleteForbidden) {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h *AnalysisHandler) GetProjectFiles(c *gin.Context) {
 	projectID := c.Param("project_id")
 
@@ -280,6 +408,8 @@ func (h *AnalysisHandler) GetFilePatterns(c *gin.Context) {
 
 func (h *AnalysisHandler) AnalyzeExistingFile(c *gin.Context) {
 	fileID := c.Param("file_id")
+	userID := c.GetString("user_id")
+	cacheConfigID := strings.TrimSpace(c.PostForm("cache_config_id"))
 
 	cacheProfile, err := parseCacheProfile(c)
 	if err != nil {
@@ -287,8 +417,17 @@ func (h *AnalysisHandler) AnalyzeExistingFile(c *gin.Context) {
 		return
 	}
 
-	task, err := h.analysisUC.RunAnalysisOnExistingFile(c.Request.Context(), fileID, cacheProfile)
+	task, err := h.analysisUC.RunAnalysisOnExistingFile(
+		c.Request.Context(),
+		userID,
+		fileID,
+		cacheConfigID,
+		cacheProfile,
+	)
 	if err != nil {
+		if writeAnalysisUploadError(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

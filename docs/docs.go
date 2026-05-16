@@ -119,6 +119,49 @@ const OpenAPIJSON = `{
         }
       }
     },
+    "/api/v1/analysis/files/{file_id}/content": {
+      "get": {
+        "summary": "Текст исходника по file_id",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Исходник как text/plain",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "404": { "description": "Файл не найден или мягко удалён" }
+        }
+      }
+    },
+    "/api/v1/analysis/files/{file_id}": {
+      "delete": {
+        "summary": "Мягко скрыть файл (не удалять объект MinIO)",
+        "description": "Устанавливает deleted_at. Скрытые файлы не попадают в список проекта; повторная загрузка того же содержимого может восстановить запись.",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Файл скрыт (или уже был скрыт)" },
+          "403": { "description": "Нет прав удалить файл" },
+          "404": { "description": "file_id не найден" }
+        }
+      }
+    },
     "/api/v1/analysis/files/{file_id}/analyze": {
       "post": {
         "summary": "Запустить анализ для уже загруженного файла",

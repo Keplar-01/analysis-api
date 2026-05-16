@@ -63,12 +63,16 @@ func main() {
 	v1.Use(middleware.JWTAuth(cfg.JWTSecret))
 	{
 		v1.POST("/upload", analysisHandler.Upload)
+		v1.GET("/cache-configs", analysisHandler.ListCacheConfigs)
+		v1.POST("/cache-configs", analysisHandler.CreateCacheConfig)
+		v1.DELETE("/cache-configs/:config_id", analysisHandler.DeleteCacheConfig)
 		v1.GET("/tasks/:task_id", analysisHandler.GetTaskStatus)
 		v1.GET("/tasks/:task_id/metrics", analysisHandler.GetTaskMetrics)
 		v1.GET("/tasks/:task_id/static-patterns", analysisHandler.GetTaskStaticPatterns)
 		v1.GET("/tasks/:task_id/aggregated", analysisHandler.GetAggregatedMetrics)
 		v1.GET("/projects/:project_id/tasks", analysisHandler.GetProjectTasks)
 		v1.GET("/projects/:project_id/files", analysisHandler.GetProjectFiles)
+		v1.DELETE("/files/:file_id", analysisHandler.SoftDeleteFile)
 		v1.GET("/files/:file_id/content", analysisHandler.GetFileContent)
 		v1.GET("/files/:file_id/metrics", analysisHandler.GetFileMetrics)
 		v1.GET("/files/:file_id/patterns", analysisHandler.GetFilePatterns)
@@ -145,6 +149,8 @@ func runMigrations(db *sqlx.DB) {
 
 	ALTER TABLE files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) NOT NULL DEFAULT '';
 	ALTER TABLE files ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE files ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(36) NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL;
 
 	CREATE INDEX IF NOT EXISTS idx_files_project_id ON files(project_id);
 	CREATE INDEX IF NOT EXISTS idx_files_dedup ON files(project_id, filename, content_hash);
@@ -170,6 +176,20 @@ func runMigrations(db *sqlx.DB) {
 
 	CREATE INDEX IF NOT EXISTS idx_tasks_file_id ON analysis_tasks(file_id);
 	CREATE INDEX IF NOT EXISTS idx_tasks_status ON analysis_tasks(status);
+
+	CREATE TABLE IF NOT EXISTS cache_simulator_configs (
+		id VARCHAR(36) PRIMARY KEY,
+		user_id VARCHAR(36) NOT NULL,
+		display_name VARCHAR(255) NOT NULL,
+		original_filename VARCHAR(255) NOT NULL,
+		s3_path TEXT NOT NULL,
+		size_bytes BIGINT NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS idx_cache_sim_configs_user_id ON cache_simulator_configs(user_id);
+
+	ALTER TABLE analysis_tasks ADD COLUMN IF NOT EXISTS cache_config_id VARCHAR(36) NOT NULL DEFAULT '';
+	ALTER TABLE analysis_tasks ADD COLUMN IF NOT EXISTS cache_config_s3_path TEXT NOT NULL DEFAULT '';
 	`
 
 	if _, err := db.Exec(schema); err != nil {

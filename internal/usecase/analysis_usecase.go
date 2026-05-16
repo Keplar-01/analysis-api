@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 )
 
 var indexedAccessPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(\[[^\]]+\])+`)
+
 const defaultUploadProjectID = "default-upload-project"
 
 var cacheInterpreterUnsupportedRules = []struct {
@@ -34,6 +36,21 @@ var cacheInterpreterUnsupportedRules = []struct {
 	{pattern: regexp.MustCompile(`for\s*\(\s*(?:int|long|short|char|float|double|size_t)\b`), reason: "cache simulation does not support declarations inside for (...); declare loop counters before the loop"},
 }
 var mainFunctionPattern = regexp.MustCompile(`\bmain\s*\(`)
+
+var (
+	ErrFileSoftDeleted       = errors.New("file not found")
+	ErrFileDeleteForbidden   = errors.New("you do not have permission to delete this file")
+)
+
+func canSoftDeleteFile(ownerID, actingUserID, actingRole string) bool {
+	if strings.EqualFold(actingRole, "admin") {
+		return true
+	}
+	if actingUserID != "" && ownerID != "" && ownerID != actingUserID {
+		return false
+	}
+	return true
+}
 
 type AnalysisUseCase struct {
 	repo               *repository.AnalysisRepository
@@ -64,13 +81,20 @@ func NewAnalysisUseCase(
 
 func (uc *AnalysisUseCase) UploadAndAnalyze(
 	ctx context.Context,
+	userID string,
 	projectID string,
 	filename string,
 	fileReader io.Reader,
 	fileSize int64,
+	cacheConfigID string,
 	cacheProfile model.CacheProfile,
 ) (*model.AnalysisTask, error) {
 	projectID = normalizeUploadProjectID(projectID)
+
+	cfg, err := uc.resolveOwnedCacheSimulatorConfig(ctx, userID, cacheConfigID)
+	if err != nil {
+		return nil, err
+	}
 
 	content, err := io.ReadAll(fileReader)
 	if err != nil {
@@ -93,26 +117,42 @@ func (uc *AnalysisUseCase) UploadAndAnalyze(
 	var file *model.File
 	if existing != nil {
 		file = existing
+		if model.FileIsHiddenFromUser(file) {
+			if err := uc.repo.RestoreDeletedFile(ctx, file.ID, userID); err != nil {
+				return nil, fmt.Errorf("restore deduplicated file: %w", err)
+			}
+			file.DeletedAt = nil
+			file.OwnerUserID = userID
+		}
 	} else {
-		file, err = uc.persistNewFile(ctx, projectID, filename, content, fileSize, contentHash)
+		file, err = uc.persistNewFile(ctx, userID, projectID, filename, content, fileSize, contentHash)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return uc.startAnalysisOnFile(ctx, file, cacheProfile)
+	return uc.startAnalysisOnFile(ctx, file, cacheProfile, cfg.ID, cfg.S3Path)
 }
 
 func (uc *AnalysisUseCase) RunAnalysisOnExistingFile(
 	ctx context.Context,
+	userID string,
 	fileID string,
+	cacheConfigID string,
 	cacheProfile model.CacheProfile,
 ) (*model.AnalysisTask, error) {
+	cfg, err := uc.resolveOwnedCacheSimulatorConfig(ctx, userID, cacheConfigID)
+	if err != nil {
+		return nil, err
+	}
 	file, err := uc.repo.GetFileByID(ctx, fileID)
 	if err != nil {
 		return nil, err
 	}
-	return uc.startAnalysisOnFile(ctx, file, cacheProfile)
+	if model.FileIsHiddenFromUser(file) {
+		return nil, ErrFileSoftDeleted
+	}
+	return uc.startAnalysisOnFile(ctx, file, cacheProfile, cfg.ID, cfg.S3Path)
 }
 
 func (uc *AnalysisUseCase) GetProjectFiles(ctx context.Context, projectID string) ([]model.File, error) {
@@ -124,27 +164,59 @@ func (uc *AnalysisUseCase) GetFileContent(ctx context.Context, fileID string) (*
 	if err != nil {
 		return nil, nil, err
 	}
+	if model.FileIsHiddenFromUser(file) {
+		return nil, nil, ErrFileSoftDeleted
+	}
+	bytes, err := uc.readStoredFileBytes(ctx, file)
+	return file, bytes, err
+}
 
+// SoftDeleteFile мягко скрывает файл из списков и пользовательских API; объект MinIO сохраняется.
+func (uc *AnalysisUseCase) SoftDeleteFile(ctx context.Context, userID string, role string, fileID string) error {
+	file, err := uc.repo.GetFileByID(ctx, fileID)
+	if err != nil {
+		return err
+	}
+	if model.FileIsHiddenFromUser(file) {
+		return nil
+	}
+	if !canSoftDeleteFile(file.OwnerUserID, userID, role) {
+		return ErrFileDeleteForbidden
+	}
+	return uc.repo.SoftDeleteFile(ctx, fileID)
+}
+
+func (uc *AnalysisUseCase) readStoredFileBytes(ctx context.Context, file *model.File) ([]byte, error) {
 	bucket, key, err := splitS3Path(file.S3Path)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	reader, err := uc.minio.Download(ctx, bucket, key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("download %s/%s: %w", bucket, key, err)
+		return nil, fmt.Errorf("download %s/%s: %w", bucket, key, err)
 	}
 	defer reader.Close()
 
 	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read object: %w", err)
+		return nil, fmt.Errorf("read object: %w", err)
 	}
-	return file, content, nil
+	return content, nil
+}
+
+func (uc *AnalysisUseCase) downloadSourceBytesForPipeline(ctx context.Context, fileID string) (*model.File, []byte, error) {
+	file, err := uc.repo.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := uc.readStoredFileBytes(ctx, file)
+	return file, b, err
 }
 
 func (uc *AnalysisUseCase) persistNewFile(
 	ctx context.Context,
+	userID string,
 	projectID string,
 	filename string,
 	content []byte,
@@ -173,6 +245,7 @@ func (uc *AnalysisUseCase) persistNewFile(
 		S3Path:      storage.BucketSourceCodes + "/" + objectKey,
 		ContentHash: contentHash,
 		SizeBytes:   fileSize,
+		OwnerUserID: userID,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := uc.repo.CreateFile(ctx, file); err != nil {
@@ -185,18 +258,22 @@ func (uc *AnalysisUseCase) startAnalysisOnFile(
 	ctx context.Context,
 	file *model.File,
 	cacheProfile model.CacheProfile,
+	cacheConfigID string,
+	cacheConfigS3Path string,
 ) (*model.AnalysisTask, error) {
 	taskID := uuid.New().String()
 	now := time.Now().UTC()
 
 	task := &model.AnalysisTask{
-		ID:               taskID,
-		FileID:           file.ID,
-		Status:           model.StatusPending,
-		Type:             "full_analysis",
-		CacheProfileHash: cacheProfile.Hash(),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                taskID,
+		FileID:            file.ID,
+		Status:            model.StatusPending,
+		Type:              "full_analysis",
+		CacheProfileHash:  cacheProfile.Hash(),
+		CacheConfigID:     cacheConfigID,
+		CacheConfigS3Path: cacheConfigS3Path,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := uc.repo.CreateTask(ctx, task); err != nil {
 		return nil, fmt.Errorf("create task record: %w", err)
@@ -274,7 +351,7 @@ func (uc *AnalysisUseCase) HandleStaticCompleted(ctx context.Context, event mode
 			if err == nil {
 				symbolMap, reusable := buildVariableRoleSymbolMap(sourceStaticRows, staticRows)
 				if reusable {
-					targetFile, targetSourceContent, err := uc.GetFileContent(ctx, task.FileID)
+					targetFile, targetSourceContent, err := uc.downloadSourceBytesForPipeline(ctx, task.FileID)
 					if err == nil {
 						rawResult, err := uc.downloadCacheResult(ctx, sourceTask.CacheArtifactPath)
 						if err == nil {
@@ -302,7 +379,7 @@ func (uc *AnalysisUseCase) HandleStaticCompleted(ctx context.Context, event mode
 		}
 	}
 
-	_, sourceContent, err := uc.GetFileContent(ctx, task.FileID)
+	_, sourceContent, err := uc.downloadSourceBytesForPipeline(ctx, task.FileID)
 	if err != nil {
 		return fmt.Errorf("download source file: %w", err)
 	}
@@ -315,10 +392,11 @@ func (uc *AnalysisUseCase) HandleStaticCompleted(ctx context.Context, event mode
 	}
 
 	startEvent := model.StartAnalysisEvent{
-		TaskID:           event.TaskID,
-		FileS3Path:       file.S3Path,
-		ProjectID:        file.ProjectID,
-		CacheProfileHash: task.CacheProfileHash,
+		TaskID:            event.TaskID,
+		FileS3Path:        file.S3Path,
+		ProjectID:         file.ProjectID,
+		CacheProfileHash:  task.CacheProfileHash,
+		CacheConfigS3Path: task.CacheConfigS3Path,
 	}
 
 	return uc.producer.Publish(ctx, kafka.TopicStartCache, event.TaskID, startEvent)
@@ -348,7 +426,7 @@ func (uc *AnalysisUseCase) HandleCacheCompleted(ctx context.Context, event model
 		return err
 	}
 
-	_, sourceContent, err := uc.GetFileContent(ctx, task.FileID)
+	_, sourceContent, err := uc.downloadSourceBytesForPipeline(ctx, task.FileID)
 	if err != nil {
 		return fmt.Errorf("download source file: %w", err)
 	}
@@ -369,6 +447,9 @@ func (uc *AnalysisUseCase) GetFileSimulationResults(ctx context.Context, fileID 
 	file, err := uc.repo.GetFileByID(ctx, fileID)
 	if err != nil {
 		return nil, err
+	}
+	if model.FileIsHiddenFromUser(file) {
+		return nil, ErrFileSoftDeleted
 	}
 
 	task, err := uc.repo.GetLatestTaskByFileID(ctx, fileID)
@@ -399,8 +480,12 @@ func (uc *AnalysisUseCase) GetFileSimulationResults(ctx context.Context, fileID 
 }
 
 func (uc *AnalysisUseCase) GetFileMetrics(ctx context.Context, fileID string) (*model.MetricsResponse, error) {
-	if _, err := uc.repo.GetFileByID(ctx, fileID); err != nil {
+	file, err := uc.repo.GetFileByID(ctx, fileID)
+	if err != nil {
 		return nil, err
+	}
+	if model.FileIsHiddenFromUser(file) {
+		return nil, ErrFileSoftDeleted
 	}
 
 	task, err := uc.repo.GetLatestTaskByFileID(ctx, fileID)
@@ -415,6 +500,9 @@ func (uc *AnalysisUseCase) GetFilePatterns(ctx context.Context, fileID string) (
 	file, err := uc.repo.GetFileByID(ctx, fileID)
 	if err != nil {
 		return nil, err
+	}
+	if model.FileIsHiddenFromUser(file) {
+		return nil, ErrFileSoftDeleted
 	}
 
 	task, err := uc.repo.GetLatestTaskByFileID(ctx, fileID)

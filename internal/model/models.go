@@ -3,13 +3,20 @@ package model
 import "time"
 
 type File struct {
-	ID          string    `json:"id" db:"id"`
-	ProjectID   string    `json:"project_id" db:"project_id"`
-	Filename    string    `json:"filename" db:"filename"`
-	S3Path      string    `json:"s3_path" db:"s3_path"`
-	ContentHash string    `json:"content_hash" db:"content_hash"`
-	SizeBytes   int64     `json:"size_bytes" db:"size_bytes"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	ID          string     `json:"id" db:"id"`
+	ProjectID   string     `json:"project_id" db:"project_id"`
+	Filename    string     `json:"filename" db:"filename"`
+	S3Path      string     `json:"s3_path" db:"s3_path"`
+	ContentHash string     `json:"content_hash" db:"content_hash"`
+	SizeBytes   int64      `json:"size_bytes" db:"size_bytes"`
+	OwnerUserID string     `json:"owner_user_id,omitempty" db:"owner_user_id"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty" db:"deleted_at"`
+	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
+}
+
+// FileIsHiddenFromUser возвращает true, если файл скрыт из списка из-за мягкого удаления.
+func FileIsHiddenFromUser(f *File) bool {
+	return f != nil && f.DeletedAt != nil
 }
 
 type AnalysisTask struct {
@@ -19,6 +26,8 @@ type AnalysisTask struct {
 	Type               string    `json:"type" db:"type"`
 	ErrorMessage       string    `json:"error_message,omitempty" db:"error_message"`
 	CacheProfileHash   string    `json:"cache_profile_hash" db:"cache_profile_hash"`
+	CacheConfigID      string    `json:"cache_config_id,omitempty" db:"cache_config_id"`
+	CacheConfigS3Path  string    `json:"cache_config_s3_path,omitempty" db:"cache_config_s3_path"`
 	StaticArtifactPath string    `json:"static_artifact_s3_path" db:"static_artifact_s3_path"`
 	CacheArtifactPath  string    `json:"cache_artifact_s3_path" db:"cache_artifact_s3_path"`
 	ReusedFromTaskID   string    `json:"reused_from_task_id,omitempty" db:"reused_from_task_id"`
@@ -36,10 +45,22 @@ const (
 )
 
 type StartAnalysisEvent struct {
-	TaskID           string `json:"task_id"`
-	FileS3Path       string `json:"file_s3_path"`
-	ProjectID        string `json:"project_id"`
-	CacheProfileHash string `json:"cache_profile_hash"`
+	TaskID            string `json:"task_id"`
+	FileS3Path        string `json:"file_s3_path"`
+	ProjectID         string `json:"project_id"`
+	CacheProfileHash  string `json:"cache_profile_hash"`
+	CacheConfigS3Path string `json:"cache_config_s3_path,omitempty"`
+}
+
+// CacheSimulatorConfig — конфиг симулятора кэша, загруженный пользователем для cache-analysis-worker.
+type CacheSimulatorConfig struct {
+	ID                string    `json:"id" db:"id"`
+	UserID            string    `json:"user_id" db:"user_id"`
+	DisplayName       string    `json:"display_name" db:"display_name"`
+	OriginalFilename  string    `json:"original_filename" db:"original_filename"`
+	S3Path            string    `json:"s3_path" db:"s3_path"`
+	SizeBytes         int64     `json:"size_bytes" db:"size_bytes"`
+	CreatedAt         time.Time `json:"created_at" db:"created_at"`
 }
 
 type AnalysisCompletedEvent struct {
