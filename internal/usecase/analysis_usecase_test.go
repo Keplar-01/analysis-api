@@ -109,6 +109,42 @@ func TestBuildVariableRoleSymbolMapRejectsAmbiguousDuplicates(t *testing.T) {
 	}
 }
 
+func TestBuildReuseSymbolMapAllowsIdentityReuseForSameFile(t *testing.T) {
+	sourceRows := []model.StaticPatternRow{
+		{TaskID: "source", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "b", SequenceIndex: 0, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "source", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "c", SequenceIndex: 1, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "source", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "a", SequenceIndex: 2, AccessKind: "store", PatternSignature: "sig-store"},
+	}
+	targetRows := []model.StaticPatternRow{
+		{TaskID: "target", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "b", SequenceIndex: 0, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "target", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "c", SequenceIndex: 1, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "target", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "a", SequenceIndex: 2, AccessKind: "store", PatternSignature: "sig-store"},
+	}
+
+	mapping, ok := buildReuseSymbolMap("file-1", "file-1", sourceRows, targetRows)
+	if !ok {
+		t.Fatalf("expected exact-file reuse mapping to succeed")
+	}
+	if mapping["a"] != "a" || mapping["b"] != "b" || mapping["c"] != "c" {
+		t.Fatalf("unexpected identity mapping: %+v", mapping)
+	}
+}
+
+func TestBuildReuseSymbolMapStillRejectsAmbiguousDuplicatesForDifferentFiles(t *testing.T) {
+	sourceRows := []model.StaticPatternRow{
+		{TaskID: "source", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "a", SequenceIndex: 0, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "source", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "b", SequenceIndex: 1, AccessKind: "load", PatternSignature: "sig-load"},
+	}
+	targetRows := []model.StaticPatternRow{
+		{TaskID: "target", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "x", SequenceIndex: 0, AccessKind: "load", PatternSignature: "sig-load"},
+		{TaskID: "target", ProjectID: "project-1", CacheProfileHash: "profile", BaseSymbol: "y", SequenceIndex: 1, AccessKind: "load", PatternSignature: "sig-load"},
+	}
+
+	if _, ok := buildReuseSymbolMap("file-1", "file-2", sourceRows, targetRows); ok {
+		t.Fatalf("expected ambiguous duplicate role mapping to remain rejected for different files")
+	}
+}
+
 func TestRemapCacheResultRenamesSourceArraysToTargetSymbols(t *testing.T) {
 	raw := &model.CacheSimResult{
 		SourceFile: "source.c",
@@ -242,10 +278,13 @@ int main() {
 		t.Fatalf("expected unsupported source to be rejected")
 	}
 	message := err.Error()
-	for _, want := range []string{"preprocessor directives", "float/double", "declarations inside for"} {
+	for _, want := range []string{"#include preprocessor directives", "float/double"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("expected %q in error message %q", want, message)
 		}
+	}
+	if strings.Contains(message, "declarations inside for") {
+		t.Fatalf("did not expect for-declaration rejection in error message %q", message)
 	}
 }
 
@@ -262,6 +301,21 @@ func TestValidateCacheInterpreterSourceAcceptsSupportedSubset(t *testing.T) {
 
 	if err := validateCacheInterpreterSource(source); err != nil {
 		t.Fatalf("expected supported source to pass validation, got %v", err)
+	}
+}
+
+func TestValidateCacheInterpreterSourceAcceptsIncludeAndForDeclaration(t *testing.T) {
+	source := []byte(`#include <stdlib.h>
+int main(void) {
+	int a[16];
+	for (int i = 0; i < 16; i = i + 1) {
+		a[i] = i;
+	}
+	return 0;
+}`)
+
+	if err := validateCacheInterpreterSource(source); err != nil {
+		t.Fatalf("expected include and for-declaration subset to pass validation, got %v", err)
 	}
 }
 

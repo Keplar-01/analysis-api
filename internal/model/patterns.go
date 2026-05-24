@@ -68,6 +68,7 @@ type VariableSequenceRow struct {
 }
 
 type DynamicPatternMetric struct {
+	SequenceIndex      uint32 `json:"sequence_index"`
 	PatternFingerprint string `json:"pattern_fingerprint"`
 	BaseSymbol         string `json:"base_symbol"`
 	AccessKind         string `json:"access_kind"`
@@ -86,6 +87,7 @@ type CacheSimResult struct {
 	SimTimeSec   float64            `json:"sim_time_sec"`
 	L1           CacheLevelSummary  `json:"l1"`
 	L2           CacheLevelSummary  `json:"l2"`
+	L3           CacheLevelSummary  `json:"l3"`
 	Arrays       []ArrayCacheMetric `json:"arrays"`
 	MemoryReads  uint64             `json:"memory_reads"`
 	MemoryWrites uint64             `json:"memory_writes"`
@@ -112,4 +114,15 @@ type ArrayCacheMetric struct {
 	MissesTotal uint64 `json:"misses_total"`
 	MissesRead  uint64 `json:"misses_read"`
 	MissesWrite uint64 `json:"misses_write"`
+}
+
+func (r CacheSimResult) CacheLevels() []CacheLevelSummary {
+	levels := make([]CacheLevelSummary, 0, 3)
+	for _, level := range []CacheLevelSummary{r.L1, r.L2, r.L3} {
+		if level.CacheLevel == "" {
+			continue
+		}
+		levels = append(levels, level)
+	}
+	return levels
 }

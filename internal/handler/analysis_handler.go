@@ -32,6 +32,9 @@ func writeAnalysisUploadError(c *gin.Context, err error) bool {
 	case errors.Is(err, usecase.ErrCacheSimulatorConfigInvalidJSON):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return true
+	case errors.Is(err, usecase.ErrCacheSimulatorConfigInvalidSchema):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return true
 	case errors.Is(err, usecase.ErrCacheSimulatorConfigTooLarge):
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
 		return true
@@ -50,6 +53,42 @@ type AnalysisHandler struct {
 
 func NewAnalysisHandler(analysisUC *usecase.AnalysisUseCase, chRepo *repository.ClickHouseRepo) *AnalysisHandler {
 	return &AnalysisHandler{analysisUC: analysisUC, chRepo: chRepo}
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+type taskEnvelope struct {
+	Message string              `json:"message"`
+	Task    *model.AnalysisTask `json:"task"`
+}
+
+type cacheConfigListEnvelope struct {
+	Configs []model.CacheSimulatorConfig `json:"configs"`
+}
+
+type cacheConfigEnvelope struct {
+	Config *model.CacheSimulatorConfig `json:"config"`
+}
+
+type staticPatternsEnvelope struct {
+	TaskID   string                   `json:"task_id"`
+	Status   string                   `json:"status"`
+	Patterns []model.StaticPatternRow `json:"patterns"`
+}
+
+type projectTasksEnvelope struct {
+	Tasks []model.AnalysisTask `json:"tasks"`
+}
+
+type projectFilesEnvelope struct {
+	Files []model.File `json:"files"`
+}
+
+type staticAnalyzerDebugResponse struct {
+	Filename string                        `json:"filename"`
+	Patterns []model.StaticArtifactPattern `json:"patterns"`
 }
 
 func (h *AnalysisHandler) Upload(c *gin.Context) {
@@ -262,6 +301,9 @@ func parseCacheProfile(c *gin.Context) (model.CacheProfile, error) {
 	profile := model.DefaultCacheProfile()
 
 	var err error
+	if profile.NumLevels, err = parseUint8Form(c, "num_levels", profile.NumLevels); err != nil {
+		return model.CacheProfile{}, err
+	}
 	if profile.L1SizeKB, err = parseUint32Form(c, "l1_size_kb", profile.L1SizeKB); err != nil {
 		return model.CacheProfile{}, err
 	}
@@ -278,6 +320,15 @@ func parseCacheProfile(c *gin.Context) (model.CacheProfile, error) {
 		return model.CacheProfile{}, err
 	}
 	if profile.L2Associativity, err = parseUint8Form(c, "l2_associativity", profile.L2Associativity); err != nil {
+		return model.CacheProfile{}, err
+	}
+	if profile.L3SizeKB, err = parseUint32Form(c, "l3_size_kb", profile.L3SizeKB); err != nil {
+		return model.CacheProfile{}, err
+	}
+	if profile.L3LineSize, err = parseUint32Form(c, "l3_line_size", profile.L3LineSize); err != nil {
+		return model.CacheProfile{}, err
+	}
+	if profile.L3Associativity, err = parseUint8Form(c, "l3_associativity", profile.L3Associativity); err != nil {
 		return model.CacheProfile{}, err
 	}
 

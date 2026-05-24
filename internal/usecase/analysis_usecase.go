@@ -24,6 +24,7 @@ import (
 )
 
 var indexedAccessPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(\[[^\]]+\])+`)
+var preprocessorDirectivePattern = regexp.MustCompile(`(?m)^\s*#\s*([A-Za-z_]\w*)`)
 
 const defaultUploadProjectID = "default-upload-project"
 
@@ -31,15 +32,13 @@ var cacheInterpreterUnsupportedRules = []struct {
 	pattern *regexp.Regexp
 	reason  string
 }{
-	{pattern: regexp.MustCompile(`(?m)^\s*#`), reason: "cache simulation does not support preprocessor directives like #include or #define"},
 	{pattern: regexp.MustCompile(`\b(double|float)\b`), reason: "cache simulation does not support float/double types; use integer-based code for cache stage"},
-	{pattern: regexp.MustCompile(`for\s*\(\s*(?:int|long|short|char|float|double|size_t)\b`), reason: "cache simulation does not support declarations inside for (...); declare loop counters before the loop"},
 }
 var mainFunctionPattern = regexp.MustCompile(`\bmain\s*\(`)
 
 var (
-	ErrFileSoftDeleted       = errors.New("file not found")
-	ErrFileDeleteForbidden   = errors.New("you do not have permission to delete this file")
+	ErrFileSoftDeleted     = errors.New("file not found")
+	ErrFileDeleteForbidden = errors.New("you do not have permission to delete this file")
 )
 
 func canSoftDeleteFile(ownerID, actingUserID, actingRole string) bool {
@@ -95,6 +94,10 @@ func (uc *AnalysisUseCase) UploadAndAnalyze(
 	if err != nil {
 		return nil, err
 	}
+	cacheProfile, err = uc.resolveCacheProfile(ctx, cfg, cacheProfile)
+	if err != nil {
+		return nil, err
+	}
 
 	content, err := io.ReadAll(fileReader)
 	if err != nil {
@@ -142,6 +145,10 @@ func (uc *AnalysisUseCase) RunAnalysisOnExistingFile(
 	cacheProfile model.CacheProfile,
 ) (*model.AnalysisTask, error) {
 	cfg, err := uc.resolveOwnedCacheSimulatorConfig(ctx, userID, cacheConfigID)
+	if err != nil {
+		return nil, err
+	}
+	cacheProfile, err = uc.resolveCacheProfile(ctx, cfg, cacheProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -285,10 +292,11 @@ func (uc *AnalysisUseCase) startAnalysisOnFile(
 	task.Status = model.StatusStaticRun
 
 	event := model.StartAnalysisEvent{
-		TaskID:           taskID,
-		FileS3Path:       file.S3Path,
-		ProjectID:        file.ProjectID,
-		CacheProfileHash: task.CacheProfileHash,
+		TaskID:            taskID,
+		FileS3Path:        file.S3Path,
+		ProjectID:         file.ProjectID,
+		CacheProfileHash:  task.CacheProfileHash,
+		CacheConfigS3Path: task.CacheConfigS3Path,
 	}
 	if err := uc.producer.Publish(ctx, kafka.TopicStartStatic, taskID, event); err != nil {
 		return nil, fmt.Errorf("kafka publish: %w", err)
@@ -339,7 +347,7 @@ func (uc *AnalysisUseCase) HandleStaticCompleted(ctx context.Context, event mode
 		return fmt.Errorf("write variable sequences: %w", err)
 	}
 
-	sourceTaskID, err := uc.chRepo.FindMatchingVariableSequenceTask(ctx, event.TaskID, file.ProjectID, task.CacheProfileHash)
+	sourceTaskID, err := uc.chRepo.FindMatchingVariableSequenceTask(ctx, event.TaskID, task.CacheProfileHash)
 	if err != nil {
 		return fmt.Errorf("find variable sequence reuse: %w", err)
 	}
@@ -349,7 +357,7 @@ func (uc *AnalysisUseCase) HandleStaticCompleted(ctx context.Context, event mode
 		if err == nil && sourceTask != nil && sourceTask.Status == model.StatusDone && sourceTask.CacheArtifactPath != "" {
 			sourceStaticRows, err := uc.chRepo.GetStaticPatterns(ctx, sourceTaskID)
 			if err == nil {
-				symbolMap, reusable := buildVariableRoleSymbolMap(sourceStaticRows, staticRows)
+				symbolMap, reusable := buildReuseSymbolMap(sourceTask.FileID, task.FileID, sourceStaticRows, staticRows)
 				if reusable {
 					targetFile, targetSourceContent, err := uc.downloadSourceBytesForPipeline(ctx, task.FileID)
 					if err == nil {
@@ -566,12 +574,16 @@ func computeOptimizationScore(raw *model.CacheSimResult) float64 {
 	}
 
 	score := 0.0
-	if raw.L1.TotalAccesses > 0 {
-		score = float64(raw.L1.TotalHits) / float64(raw.L1.TotalAccesses) * 90.0
+	levels := raw.CacheLevels()
+	if len(levels) == 0 {
+		return 0
 	}
-	if raw.L2.TotalAccesses > 0 {
-		l2Rate := float64(raw.L2.TotalHits) / float64(raw.L2.TotalAccesses)
-		score += l2Rate * 10.0
+	if levels[0].TotalAccesses > 0 {
+		score = float64(levels[0].TotalHits) / float64(levels[0].TotalAccesses) * 50.0
+	}
+	if len(levels) > 1 && levels[1].TotalAccesses > 0 {
+		nextLevelRate := float64(levels[1].TotalHits) / float64(levels[1].TotalAccesses)
+		score += nextLevelRate * 50.0
 	}
 	if score > 100 {
 		score = 100
@@ -584,6 +596,15 @@ func validateCacheInterpreterSource(source []byte) error {
 	reasons := make([]string, 0, len(cacheInterpreterUnsupportedRules)+1)
 	if !mainFunctionPattern.MatchString(text) {
 		reasons = append(reasons, "cache simulation requires a main() function")
+	}
+	for _, match := range preprocessorDirectivePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if match[1] != "include" {
+			reasons = append(reasons, "cache simulation only supports #include preprocessor directives; directives like #define are not supported")
+			break
+		}
 	}
 	for _, rule := range cacheInterpreterUnsupportedRules {
 		if rule.pattern.MatchString(text) {
@@ -662,6 +683,7 @@ func (uc *AnalysisUseCase) materializeDynamicPatternMetrics(
 	sourceLines := strings.Split(string(sourceContent), "\n")
 
 	type materializedKey struct {
+		sequenceIndex      uint32
 		patternFingerprint string
 		baseSymbol         string
 		accessKind         string
@@ -681,6 +703,7 @@ func (uc *AnalysisUseCase) materializeDynamicPatternMetrics(
 		arrayMetrics := arrayMetricsBySymbol[lookupSymbol]
 		for _, arrayMetric := range arrayMetrics {
 			key := materializedKey{
+				sequenceIndex:      staticRow.SequenceIndex,
 				patternFingerprint: staticRow.PatternFingerprint,
 				baseSymbol:         staticRow.BaseSymbol,
 				accessKind:         staticRow.AccessKind,
@@ -688,6 +711,7 @@ func (uc *AnalysisUseCase) materializeDynamicPatternMetrics(
 				cacheLevel:         arrayMetric.CacheLevel,
 			}
 			uniqueRows[key] = model.DynamicPatternMetric{
+				SequenceIndex:      staticRow.SequenceIndex,
 				PatternFingerprint: staticRow.PatternFingerprint,
 				BaseSymbol:         staticRow.BaseSymbol,
 				AccessKind:         staticRow.AccessKind,
@@ -994,6 +1018,43 @@ func buildVariableRoleSymbolMap(sourceRows, targetRows []model.StaticPatternRow)
 	return mapping, true
 }
 
+func buildReuseSymbolMap(sourceFileID, targetFileID string, sourceRows, targetRows []model.StaticPatternRow) (map[string]string, bool) {
+	if sourceFileID != "" && sourceFileID == targetFileID {
+		return buildIdentitySymbolMap(sourceRows, targetRows)
+	}
+	return buildVariableRoleSymbolMap(sourceRows, targetRows)
+}
+
+func buildIdentitySymbolMap(sourceRows, targetRows []model.StaticPatternRow) (map[string]string, bool) {
+	if len(sourceRows) == 0 || len(targetRows) == 0 {
+		return nil, false
+	}
+
+	sourceSymbols := make(map[string]struct{})
+	for _, row := range sourceRows {
+		sourceSymbols[row.BaseSymbol] = struct{}{}
+	}
+
+	targetSymbols := make(map[string]struct{})
+	for _, row := range targetRows {
+		targetSymbols[row.BaseSymbol] = struct{}{}
+	}
+
+	if len(sourceSymbols) != len(targetSymbols) {
+		return nil, false
+	}
+
+	mapping := make(map[string]string, len(sourceSymbols))
+	for symbol := range sourceSymbols {
+		if _, ok := targetSymbols[symbol]; !ok {
+			return nil, false
+		}
+		mapping[symbol] = symbol
+	}
+
+	return mapping, true
+}
+
 func remapCacheResult(raw *model.CacheSimResult, symbolMap map[string]string, sourceFile string) *model.CacheSimResult {
 	if raw == nil {
 		return nil
@@ -1035,10 +1096,10 @@ func (uc *AnalysisUseCase) uploadCacheArtifact(ctx context.Context, taskID strin
 }
 
 func sequenceSignature(row model.StaticPatternRow) string {
-	if row.PatternSignature != "" {
-		return row.PatternSignature
+	if row.PatternFingerprint != "" {
+		return row.PatternFingerprint
 	}
-	return row.PatternFingerprint
+	return row.PatternSignature
 }
 
 func splitS3Path(s3Path string) (string, string, error) {
@@ -1047,6 +1108,39 @@ func splitS3Path(s3Path string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid s3 path: %s", s3Path)
 	}
 	return parts[0], parts[1], nil
+}
+
+func (uc *AnalysisUseCase) resolveCacheProfile(
+	ctx context.Context,
+	cfg *model.CacheSimulatorConfig,
+	fallback model.CacheProfile,
+) (model.CacheProfile, error) {
+	if cfg == nil || strings.TrimSpace(cfg.S3Path) == "" {
+		return fallback, nil
+	}
+
+	bucket, key, err := splitS3Path(cfg.S3Path)
+	if err != nil {
+		return model.CacheProfile{}, err
+	}
+
+	reader, err := uc.minio.Download(ctx, bucket, key)
+	if err != nil {
+		return model.CacheProfile{}, fmt.Errorf("download cache config %s/%s: %w", bucket, key, err)
+	}
+	defer reader.Close()
+
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return model.CacheProfile{}, fmt.Errorf("read cache config: %w", err)
+	}
+
+	profile, err := model.CacheProfileFromConfigJSON(payload)
+	if err != nil {
+		return model.CacheProfile{}, fmt.Errorf("parse cache config profile: %w", err)
+	}
+
+	return profile, nil
 }
 
 func (uc *AnalysisUseCase) RunStaticAnalyzerDebug(ctx context.Context, filename string, content []byte) ([]model.StaticArtifactPattern, error) {

@@ -14,6 +14,7 @@ import (
 const latestDynamicPatternMetricsCTE = `
 WITH latest_dynamic AS (
 	SELECT
+		sequence_index,
 		pattern_fingerprint,
 		base_symbol,
 		access_kind,
@@ -25,6 +26,7 @@ WITH latest_dynamic AS (
 		argMax(source_task_id, created_at) AS source_task_id
 	FROM dynamic_pattern_metrics
 	GROUP BY
+		sequence_index,
 		pattern_fingerprint,
 		base_symbol,
 		access_kind,
@@ -119,6 +121,7 @@ func schemaDDL(db string) []string {
 		ORDER BY (project_id, cache_profile_hash, base_symbol, variable_sequence_hash, task_id)`,
 
 		`CREATE TABLE IF NOT EXISTS ` + db + `.dynamic_pattern_metrics (
+			sequence_index      UInt32,
 			pattern_fingerprint String,
 			base_symbol         String,
 			access_kind         String,
@@ -132,7 +135,9 @@ func schemaDDL(db string) []string {
 			interpreter_version String,
 			created_at          DateTime DEFAULT now()
 		) ENGINE = MergeTree()
-		ORDER BY (pattern_fingerprint, base_symbol, access_kind, cache_profile_hash, cache_level, created_at)`,
+		ORDER BY (sequence_index, pattern_fingerprint, base_symbol, access_kind, cache_profile_hash, cache_level, created_at)`,
+
+		`ALTER TABLE ` + db + `.dynamic_pattern_metrics ADD COLUMN IF NOT EXISTS sequence_index UInt32 FIRST`,
 	}
 }
 
@@ -311,6 +316,7 @@ func (r *ClickHouseRepo) WriteDynamicPatternMetrics(ctx context.Context, rows []
 
 	batch, err := r.conn.PrepareBatch(ctx, `
 		INSERT INTO dynamic_pattern_metrics (
+			sequence_index,
 			pattern_fingerprint,
 			base_symbol,
 			access_kind,
@@ -329,6 +335,7 @@ func (r *ClickHouseRepo) WriteDynamicPatternMetrics(ctx context.Context, rows []
 
 	for _, row := range rows {
 		if err := batch.Append(
+			row.SequenceIndex,
 			row.PatternFingerprint,
 			row.BaseSymbol,
 			row.AccessKind,
@@ -365,7 +372,7 @@ func (r *ClickHouseRepo) WriteVariableSequences(ctx context.Context, rows []mode
 			base_symbol,
 			variable_sequence_hash,
 			pattern_count
-		)`) 
+		)`)
 	if err != nil {
 		return fmt.Errorf("prepare variable_sequences batch: %w", err)
 	}
@@ -390,7 +397,7 @@ func (r *ClickHouseRepo) WriteVariableSequences(ctx context.Context, rows []mode
 	return nil
 }
 
-func (r *ClickHouseRepo) FindMatchingVariableSequenceTask(ctx context.Context, taskID, projectID, cacheProfileHash string) (string, error) {
+func (r *ClickHouseRepo) FindMatchingVariableSequenceTask(ctx context.Context, taskID, cacheProfileHash string) (string, error) {
 	query := `
 		WITH current_sequence_counts AS (
 			SELECT
@@ -415,8 +422,7 @@ func (r *ClickHouseRepo) FindMatchingVariableSequenceTask(ctx context.Context, t
 				count() AS role_count,
 				min(created_at) AS first_seen_at
 			FROM variable_sequences
-			WHERE project_id = ?
-				AND cache_profile_hash = ?
+			WHERE cache_profile_hash = ?
 				AND task_id != ?
 			GROUP BY task_id, variable_sequence_hash, pattern_count
 		),
@@ -446,7 +452,7 @@ func (r *ClickHouseRepo) FindMatchingVariableSequenceTask(ctx context.Context, t
 		LIMIT 1`
 
 	var sourceTaskID string
-	if err := r.conn.QueryRow(ctx, query, taskID, projectID, cacheProfileHash, taskID).Scan(&sourceTaskID); err != nil {
+	if err := r.conn.QueryRow(ctx, query, taskID, cacheProfileHash, taskID).Scan(&sourceTaskID); err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
 		}
@@ -491,7 +497,8 @@ func (r *ClickHouseRepo) GetAggregatedMetrics(ctx context.Context, taskID string
 			coalesce(ld.misses_write, 0)    AS misses_write
 		FROM static_patterns sp
 		LEFT JOIN latest_dynamic ld
-			ON sp.pattern_fingerprint = ld.pattern_fingerprint
+			ON sp.sequence_index = ld.sequence_index
+			AND sp.pattern_fingerprint = ld.pattern_fingerprint
 			AND sp.base_symbol = ld.base_symbol
 			AND sp.access_kind = ld.access_kind
 			AND sp.cache_profile_hash = ld.cache_profile_hash

@@ -24,12 +24,13 @@ const (
 )
 
 var (
-	ErrCacheSimulatorConfigRequired    = errors.New("cache_config_id is required")
-	ErrCacheSimulatorConfigNotFound    = errors.New("cache simulator configuration not found or not accessible")
-	ErrCacheSimulatorConfigQuota       = errors.New("cache simulator configuration quota exceeded (max 10 for regular users)")
-	ErrCacheSimulatorConfigInvalidExt  = errors.New("unsupported configuration file extension (only .json is allowed)")
-	ErrCacheSimulatorConfigInvalidJSON = errors.New("configuration file must be valid JSON")
-	ErrCacheSimulatorConfigTooLarge    = errors.New("configuration file is too large")
+	ErrCacheSimulatorConfigRequired      = errors.New("cache_config_id is required")
+	ErrCacheSimulatorConfigNotFound      = errors.New("cache simulator configuration not found or not accessible")
+	ErrCacheSimulatorConfigQuota         = errors.New("cache simulator configuration quota exceeded (max 10 for regular users)")
+	ErrCacheSimulatorConfigInvalidExt    = errors.New("unsupported configuration file extension (only .json is allowed)")
+	ErrCacheSimulatorConfigInvalidJSON   = errors.New("configuration file must be valid JSON")
+	ErrCacheSimulatorConfigInvalidSchema = errors.New("configuration file has invalid cache simulator schema")
+	ErrCacheSimulatorConfigTooLarge      = errors.New("configuration file is too large")
 )
 
 func isAdmin(role string) bool {
@@ -126,6 +127,9 @@ func (uc *AnalysisUseCase) CreateCacheSimulatorConfig(
 	var jsonCheck json.RawMessage
 	if err := json.Unmarshal(data, &jsonCheck); err != nil || len(jsonCheck) == 0 {
 		return nil, ErrCacheSimulatorConfigInvalidJSON
+	}
+	if _, err := model.CacheProfileFromConfigJSON(data); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCacheSimulatorConfigInvalidSchema, err)
 	}
 
 	if !isAdmin(userRole) {

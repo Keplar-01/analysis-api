@@ -24,6 +24,10 @@ type AdminHandler struct {
 	kafkaBrokers string
 }
 
+type topPatternsEnvelope struct {
+	Patterns []repository.TopPatternRow `json:"patterns"`
+}
+
 func NewAdminHandler(
 	uc *usecase.AnalysisUseCase,
 	chRepo *repository.ClickHouseRepo,
