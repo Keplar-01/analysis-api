@@ -31,6 +31,9 @@ type Config struct {
 
 	InterpreterVersion string
 	AnalyzerBinary     string
+
+	RedisAddr     string
+	RedisPassword string
 }
 
 func Load() *Config {
@@ -63,6 +66,9 @@ func Load() *Config {
 
 		InterpreterVersion: getEnv("INTERPRETER_VERSION", "CacheSim.exe"),
 		AnalyzerBinary:     getEnv("ANALYZER_BINARY", "/usr/local/bin/analyzer"),
+
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword: getEnv("REDIS_PASSWORD", "redis_secret"),
 	}
 }
 

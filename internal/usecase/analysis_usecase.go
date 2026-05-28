@@ -21,6 +21,7 @@ import (
 	"github.com/diploma/analysis-api-service/internal/repository"
 	"github.com/diploma/analysis-api-service/internal/storage"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 var indexedAccessPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(\[[^\]]+\])+`)
@@ -39,6 +40,7 @@ var mainFunctionPattern = regexp.MustCompile(`\bmain\s*\(`)
 var (
 	ErrFileSoftDeleted     = errors.New("file not found")
 	ErrFileDeleteForbidden = errors.New("you do not have permission to delete this file")
+	ErrQuotaExceeded       = errors.New("daily analysis quota exceeded")
 )
 
 func canSoftDeleteFile(ownerID, actingUserID, actingRole string) bool {
@@ -58,6 +60,7 @@ type AnalysisUseCase struct {
 	producer           *kafka.Producer
 	analyzer           *analysisanalyzer.Analyzer
 	interpreterVersion string
+	redis              *redis.Client
 }
 
 func NewAnalysisUseCase(
@@ -67,6 +70,7 @@ func NewAnalysisUseCase(
 	producer *kafka.Producer,
 	analyzer *analysisanalyzer.Analyzer,
 	interpreterVersion string,
+	redisClient *redis.Client,
 ) *AnalysisUseCase {
 	return &AnalysisUseCase{
 		repo:               repo,
@@ -75,12 +79,34 @@ func NewAnalysisUseCase(
 		producer:           producer,
 		analyzer:           analyzer,
 		interpreterVersion: interpreterVersion,
+		redis:              redisClient,
 	}
+}
+
+func (uc *AnalysisUseCase) consumeQuota(ctx context.Context, userID string, quota int) error {
+	if quota <= 0 {
+		return ErrQuotaExceeded
+	}
+
+	key := fmt.Sprintf("analysis_quota:%s:%s", userID, time.Now().UTC().Format("2006-01-02"))
+
+	used, err := uc.redis.Incr(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("quota check failed: %w", err)
+	}
+	if used == 1 {
+		_ = uc.redis.Expire(ctx, key, 24*time.Hour).Err()
+	}
+	if used > int64(quota) {
+		return ErrQuotaExceeded
+	}
+	return nil
 }
 
 func (uc *AnalysisUseCase) UploadAndAnalyze(
 	ctx context.Context,
 	userID string,
+	quota int,
 	projectID string,
 	filename string,
 	fileReader io.Reader,
@@ -88,6 +114,10 @@ func (uc *AnalysisUseCase) UploadAndAnalyze(
 	cacheConfigID string,
 	cacheProfile model.CacheProfile,
 ) (*model.AnalysisTask, error) {
+	if err := uc.consumeQuota(ctx, userID, quota); err != nil {
+		return nil, err
+	}
+
 	projectID = normalizeUploadProjectID(projectID)
 
 	cfg, err := uc.resolveOwnedCacheSimulatorConfig(ctx, userID, cacheConfigID)
@@ -140,10 +170,15 @@ func (uc *AnalysisUseCase) UploadAndAnalyze(
 func (uc *AnalysisUseCase) RunAnalysisOnExistingFile(
 	ctx context.Context,
 	userID string,
+	quota int,
 	fileID string,
 	cacheConfigID string,
 	cacheProfile model.CacheProfile,
 ) (*model.AnalysisTask, error) {
+	if err := uc.consumeQuota(ctx, userID, quota); err != nil {
+		return nil, err
+	}
+
 	cfg, err := uc.resolveOwnedCacheSimulatorConfig(ctx, userID, cacheConfigID)
 	if err != nil {
 		return nil, err

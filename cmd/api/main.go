@@ -35,6 +35,12 @@ func main() {
 		log.Fatalf("failed to connect to MinIO: %v", err)
 	}
 
+	redisClient, err := storage.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword)
+	if err != nil {
+		log.Fatalf("failed to connect to Redis: %v", err)
+	}
+	defer redisClient.Close()
+
 	producer := kafka.NewProducer(cfg.KafkaBrokers)
 	defer producer.Close()
 
@@ -47,7 +53,7 @@ func main() {
 	defer chRepo.Close()
 
 	analyzer := analysisanalyzer.New(cfg.AnalyzerBinary)
-	analysisUC := usecase.NewAnalysisUseCase(repo, chRepo, minioClient, producer, analyzer, cfg.InterpreterVersion)
+	analysisUC := usecase.NewAnalysisUseCase(repo, chRepo, minioClient, producer, analyzer, cfg.InterpreterVersion, redisClient)
 	consumer := kafka.NewConsumer(cfg.KafkaBrokers, analysisUC)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

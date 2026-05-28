@@ -42,9 +42,27 @@ func JWTAuth(secret string) gin.HandlerFunc {
 		userID, _ := claims["user_id"].(string)
 		email, _ := claims["email"].(string)
 		role, _ := claims["role"].(string)
+		isActive := true
+		if isActiveRaw, ok := claims["is_active"]; ok {
+			if activeBool, ok := isActiveRaw.(bool); ok {
+				isActive = activeBool
+			}
+		}
+		analysisQuota := 0
+		if quotaRaw, ok := claims["analysis_quota"]; ok {
+			if quotaFloat, ok := quotaRaw.(float64); ok {
+				analysisQuota = int(quotaFloat)
+			}
+		}
+		if !isActive {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account is disabled"})
+			return
+		}
+
 		c.Set("user_id", userID)
 		c.Set("email", email)
 		c.Set("role", role)
+		c.Set("analysis_quota", analysisQuota)
 		c.Next()
 	}
 }

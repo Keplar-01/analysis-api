@@ -26,6 +26,9 @@ func writeAnalysisUploadError(c *gin.Context, err error) bool {
 	case errors.Is(err, usecase.ErrCacheSimulatorConfigQuota):
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return true
+	case errors.Is(err, usecase.ErrQuotaExceeded):
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error()})
+		return true
 	case errors.Is(err, usecase.ErrCacheSimulatorConfigInvalidExt):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return true
@@ -94,6 +97,7 @@ type staticAnalyzerDebugResponse struct {
 func (h *AnalysisHandler) Upload(c *gin.Context) {
 	projectID := c.PostForm("project_id")
 	userID := c.GetString("user_id")
+	quota := c.GetInt("analysis_quota")
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -113,6 +117,7 @@ func (h *AnalysisHandler) Upload(c *gin.Context) {
 	task, err := h.analysisUC.UploadAndAnalyze(
 		c.Request.Context(),
 		userID,
+		quota,
 		projectID,
 		header.Filename,
 		file,
@@ -460,6 +465,7 @@ func (h *AnalysisHandler) GetFilePatterns(c *gin.Context) {
 func (h *AnalysisHandler) AnalyzeExistingFile(c *gin.Context) {
 	fileID := c.Param("file_id")
 	userID := c.GetString("user_id")
+	quota := c.GetInt("analysis_quota")
 	cacheConfigID := strings.TrimSpace(c.PostForm("cache_config_id"))
 
 	cacheProfile, err := parseCacheProfile(c)
@@ -471,6 +477,7 @@ func (h *AnalysisHandler) AnalyzeExistingFile(c *gin.Context) {
 	task, err := h.analysisUC.RunAnalysisOnExistingFile(
 		c.Request.Context(),
 		userID,
+		quota,
 		fileID,
 		cacheConfigID,
 		cacheProfile,
