@@ -13,6 +13,10 @@ type Config struct {
 
 	JWTSecret string
 
+	DevUserID    string
+	DevUserEmail string
+	DevUserRole  string
+
 	MinioEndpoint  string
 	MinioAccessKey string
 	MinioSecretKey string
@@ -40,6 +44,10 @@ func Load() *Config {
 		DBName:     getEnv("DB_NAME", "analysis_db"),
 
 		JWTSecret: getEnv("JWT_SECRET", "super-secret-jwt-key-for-diploma-2026"),
+
+		DevUserID:    getEnv("DEV_USER_ID", "00000000-0000-0000-0000-000000000001"),
+		DevUserEmail: getEnv("DEV_USER_EMAIL", "dev@analysis.local"),
+		DevUserRole:  getEnv("DEV_USER_ROLE", "admin"),
 
 		MinioEndpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinioAccessKey: getEnv("MINIO_ACCESS_KEY", "minioadmin"),

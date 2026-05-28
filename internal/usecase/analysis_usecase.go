@@ -554,39 +554,42 @@ func (uc *AnalysisUseCase) ComputeTaskMetrics(ctx context.Context, taskID string
 		return resp, nil
 	}
 
-	l1 := raw.L1
-	resp.TotalMemoryAccess = l1.TotalAccesses
-	resp.CacheHits = l1.TotalHits
-	resp.CacheMisses = l1.TotalMisses
-
-	if l1.TotalAccesses > 0 {
-		resp.HitRate = float64(l1.TotalHits) / float64(l1.TotalAccesses)
-		resp.MissRate = float64(l1.TotalMisses) / float64(l1.TotalAccesses)
-	}
-	resp.OptimizationScore = computeOptimizationScore(raw)
+	resp.Levels = buildCacheLevelMetrics(raw)
 
 	return resp, nil
 }
 
-func computeOptimizationScore(raw *model.CacheSimResult) float64 {
+func buildCacheLevelMetrics(raw *model.CacheSimResult) []model.CacheLevelMetrics {
 	if raw == nil {
-		return 0
+		return nil
 	}
 
-	score := 0.0
 	levels := raw.CacheLevels()
-	if len(levels) == 0 {
+	result := make([]model.CacheLevelMetrics, 0, len(levels))
+	for _, level := range levels {
+		metrics := model.CacheLevelMetrics{
+			CacheLevel:        level.CacheLevel,
+			TotalMemoryAccess: level.TotalAccesses,
+			CacheHits:         level.TotalHits,
+			CacheMisses:       level.TotalMisses,
+			OptimizationScore: levelOptimizationScore(level),
+		}
+		if level.TotalAccesses > 0 {
+			metrics.HitRate = float64(level.TotalHits) / float64(level.TotalAccesses)
+			metrics.MissRate = float64(level.TotalMisses) / float64(level.TotalAccesses)
+		}
+		result = append(result, metrics)
+	}
+	return result
+}
+
+func levelOptimizationScore(level model.CacheLevelSummary) float64 {
+	if level.TotalAccesses == 0 {
 		return 0
 	}
-	if levels[0].TotalAccesses > 0 {
-		score = float64(levels[0].TotalHits) / float64(levels[0].TotalAccesses) * 50.0
-	}
-	if len(levels) > 1 && levels[1].TotalAccesses > 0 {
-		nextLevelRate := float64(levels[1].TotalHits) / float64(levels[1].TotalAccesses)
-		score += nextLevelRate * 50.0
-	}
+	score := float64(level.TotalHits) / float64(level.TotalAccesses) * 100.0
 	if score > 100 {
-		score = 100
+		return 100
 	}
 	return score
 }
@@ -711,6 +714,7 @@ func (uc *AnalysisUseCase) materializeDynamicPatternMetrics(
 				cacheLevel:         arrayMetric.CacheLevel,
 			}
 			uniqueRows[key] = model.DynamicPatternMetric{
+				TaskID:             taskID,
 				SequenceIndex:      staticRow.SequenceIndex,
 				PatternFingerprint: staticRow.PatternFingerprint,
 				BaseSymbol:         staticRow.BaseSymbol,

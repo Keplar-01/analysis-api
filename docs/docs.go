@@ -26,7 +26,7 @@ const OpenAPIJSON = `{
   "info": {
     "title": "analysis-api-service",
     "version": "1.0.0",
-    "description": "API для запуска анализа, просмотра статических паттернов и debug-запуска статического анализатора."
+    "description": "API гибридного анализа кеш-эффективности: статика + кэш-симуляция. Для локальной работы без core-api получите JWT через GET /api/v1/analysis/dev-token."
   },
   "components": {
     "securitySchemes": {
@@ -43,29 +43,30 @@ const OpenAPIJSON = `{
     }
   ],
   "paths": {
-    "/api/v1/auth/login": {
-      "post": {
-        "summary": "Логин и получение JWT",
-        "description": "Возвращает JWT-токен для вызова защищённых ручек analysis-api. После этого нажми Authorize в Swagger и вставь токен без префикса Bearer.",
+    "/api/v1/analysis/dev-token": {
+      "get": {
+        "summary": "Получить JWT для работы без core-api",
+        "description": "Возвращает готовый JWT-токен для локальной и гибридной интеграции с analysis-api. Используйте его в Swagger Authorize (без префикса Bearer) или в заголовке Authorization: Bearer <token>. Не требует core-api и учётных данных.",
         "security": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["email", "password"],
-                "properties": {
-                  "email": { "type": "string", "example": "admin@system.local" },
-                  "password": { "type": "string", "example": "admin" }
+        "responses": {
+          "200": {
+            "description": "JWT token issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string" },
+                    "expires_in": { "type": "integer", "format": "int64", "example": 86400 },
+                    "user_id": { "type": "string" },
+                    "email": { "type": "string", "example": "dev@analysis.local" },
+                    "role": { "type": "string", "example": "admin" }
+                  }
                 }
               }
             }
-          }
-        },
-        "responses": {
-          "200": { "description": "JWT token issued" },
-          "401": { "description": "Invalid credentials" }
+          },
+          "500": { "description": "Failed to issue token" }
         }
       }
     },
@@ -197,6 +198,69 @@ const OpenAPIJSON = `{
           "400": { "description": "Bad request" },
           "404": { "description": "File not found" },
           "500": { "description": "Failed to start analysis" }
+        }
+      }
+    },
+    "/api/v1/analysis/tasks/{task_id}/metrics": {
+      "get": {
+        "summary": "Сводные метрики задачи по всем уровням кэша",
+        "description": "Возвращает массив levels с метриками и optimization_score для каждого уровня кэша (L1/L2/L3). Источник — cache-out.json в MinIO.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task_id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "levels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "cache_level": { "type": "string", "example": "L1" },
+                          "total_memory_accesses": { "type": "integer", "format": "int64" },
+                          "cache_hits": { "type": "integer", "format": "int64" },
+                          "cache_misses": { "type": "integer", "format": "int64" },
+                          "hit_rate": { "type": "number", "format": "double" },
+                          "miss_rate": { "type": "number", "format": "double" },
+                          "optimization_score": { "type": "number", "format": "double", "description": "Hit rate уровня × 100" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Task not found" }
+        }
+      }
+    },
+    "/api/v1/analysis/files/{file_id}/metrics": {
+      "get": {
+        "summary": "Сводные метрики последней задачи по file_id",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "File metrics (same shape as task metrics)" },
+          "404": { "description": "File or analysis results not found" }
         }
       }
     },

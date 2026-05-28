@@ -25,6 +25,7 @@ WITH latest_dynamic AS (
 		argMax(misses_write, created_at) AS misses_write,
 		argMax(source_task_id, created_at) AS source_task_id
 	FROM dynamic_pattern_metrics
+	WHERE task_id = ?
 	GROUP BY
 		sequence_index,
 		pattern_fingerprint,
@@ -121,6 +122,7 @@ func schemaDDL(db string) []string {
 		ORDER BY (project_id, cache_profile_hash, base_symbol, variable_sequence_hash, task_id)`,
 
 		`CREATE TABLE IF NOT EXISTS ` + db + `.dynamic_pattern_metrics (
+			task_id             String,
 			sequence_index      UInt32,
 			pattern_fingerprint String,
 			base_symbol         String,
@@ -135,9 +137,10 @@ func schemaDDL(db string) []string {
 			interpreter_version String,
 			created_at          DateTime DEFAULT now()
 		) ENGINE = MergeTree()
-		ORDER BY (sequence_index, pattern_fingerprint, base_symbol, access_kind, cache_profile_hash, cache_level, created_at)`,
+		ORDER BY (task_id, sequence_index, pattern_fingerprint, base_symbol, access_kind, cache_profile_hash, cache_level, created_at)`,
 
-		`ALTER TABLE ` + db + `.dynamic_pattern_metrics ADD COLUMN IF NOT EXISTS sequence_index UInt32 FIRST`,
+		`ALTER TABLE ` + db + `.dynamic_pattern_metrics ADD COLUMN IF NOT EXISTS sequence_index UInt32 AFTER task_id`,
+		`ALTER TABLE ` + db + `.dynamic_pattern_metrics ADD COLUMN IF NOT EXISTS task_id String DEFAULT '' FIRST`,
 	}
 }
 
@@ -316,6 +319,7 @@ func (r *ClickHouseRepo) WriteDynamicPatternMetrics(ctx context.Context, rows []
 
 	batch, err := r.conn.PrepareBatch(ctx, `
 		INSERT INTO dynamic_pattern_metrics (
+			task_id,
 			sequence_index,
 			pattern_fingerprint,
 			base_symbol,
@@ -335,6 +339,7 @@ func (r *ClickHouseRepo) WriteDynamicPatternMetrics(ctx context.Context, rows []
 
 	for _, row := range rows {
 		if err := batch.Append(
+			row.TaskID,
 			row.SequenceIndex,
 			row.PatternFingerprint,
 			row.BaseSymbol,
@@ -505,7 +510,7 @@ func (r *ClickHouseRepo) GetAggregatedMetrics(ctx context.Context, taskID string
 		WHERE sp.task_id = ?
 		ORDER BY sp.sequence_index, sp.source_file, sp.source_line, sp.source_column, sp.base_symbol, sp.access_kind, ld.cache_level`
 
-	rows, err := r.conn.Query(ctx, query, taskID)
+	rows, err := r.conn.Query(ctx, query, taskID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("query aggregated metrics: %w", err)
 	}

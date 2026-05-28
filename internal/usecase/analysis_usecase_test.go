@@ -319,6 +319,34 @@ int main(void) {
 	}
 }
 
+func TestBuildCacheLevelMetricsIncludesAllLevels(t *testing.T) {
+	raw := &model.CacheSimResult{
+		L1: model.CacheLevelSummary{CacheLevel: "L1", TotalAccesses: 100, TotalHits: 80, TotalMisses: 20},
+		L2: model.CacheLevelSummary{CacheLevel: "L2", TotalAccesses: 20, TotalHits: 10, TotalMisses: 10},
+		L3: model.CacheLevelSummary{CacheLevel: "L3", TotalAccesses: 10, TotalHits: 4, TotalMisses: 6},
+	}
+
+	levels := buildCacheLevelMetrics(raw)
+	if len(levels) != 3 {
+		t.Fatalf("len(levels) = %d, want 3", len(levels))
+	}
+	if levels[0].OptimizationScore != 80 {
+		t.Fatalf("L1 score = %v, want 80", levels[0].OptimizationScore)
+	}
+	if levels[1].HitRate != 0.5 {
+		t.Fatalf("L2 hit_rate = %v, want 0.5", levels[1].HitRate)
+	}
+	if levels[2].CacheLevel != "L3" {
+		t.Fatalf("third level = %q, want L3", levels[2].CacheLevel)
+	}
+}
+
+func TestLevelOptimizationScoreReturnsZeroForEmptyLevel(t *testing.T) {
+	if got := levelOptimizationScore(model.CacheLevelSummary{CacheLevel: "L1"}); got != 0 {
+		t.Fatalf("levelOptimizationScore(empty) = %v, want 0", got)
+	}
+}
+
 func TestNormalizeUploadProjectIDFallsBackToDefault(t *testing.T) {
 	if got := normalizeUploadProjectID(""); got != defaultUploadProjectID {
 		t.Fatalf("normalizeUploadProjectID(empty) = %q, want %q", got, defaultUploadProjectID)

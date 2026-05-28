@@ -68,6 +68,7 @@ type VariableSequenceRow struct {
 }
 
 type DynamicPatternMetric struct {
+	TaskID             string `json:"task_id"`
 	SequenceIndex      uint32 `json:"sequence_index"`
 	PatternFingerprint string `json:"pattern_fingerprint"`
 	BaseSymbol         string `json:"base_symbol"`

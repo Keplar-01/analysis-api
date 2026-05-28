@@ -54,10 +54,13 @@ func main() {
 	consumer.StartListening(ctx)
 
 	analysisHandler := handler.NewAnalysisHandler(analysisUC, chRepo)
+	authHandler := handler.NewAuthHandler(cfg.JWTSecret, cfg.DevUserID, cfg.DevUserEmail, cfg.DevUserRole)
 	adminHandler := handler.NewAdminHandler(analysisUC, chRepo, repo, minioClient, cfg.KafkaBrokers)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
+
+	r.GET("/api/v1/analysis/dev-token", authHandler.IssueDevToken)
 
 	v1 := r.Group("/api/v1/analysis")
 	v1.Use(middleware.JWTAuth(cfg.JWTSecret))

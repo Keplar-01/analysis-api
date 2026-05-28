@@ -74,15 +74,29 @@ type UploadRequest struct {
 	ProjectID string `form:"project_id"`
 }
 
-type MetricsResponse struct {
-	TaskID            string  `json:"task_id"`
-	Status            string  `json:"status"`
+// CacheLevelMetrics — сводные метрики и score для одного уровня кэша (L1/L2/L3).
+type CacheLevelMetrics struct {
+	CacheLevel        string  `json:"cache_level"`
 	TotalMemoryAccess uint64  `json:"total_memory_accesses"`
 	CacheHits         uint64  `json:"cache_hits"`
 	CacheMisses       uint64  `json:"cache_misses"`
 	HitRate           float64 `json:"hit_rate"`
 	MissRate          float64 `json:"miss_rate"`
 	OptimizationScore float64 `json:"optimization_score"`
+}
+
+type MetricsResponse struct {
+	TaskID string              `json:"task_id"`
+	Status string              `json:"status"`
+	Levels []CacheLevelMetrics `json:"levels"`
+}
+
+type DevTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresIn int64  `json:"expires_in"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	Role      string `json:"role"`
 }
 
 type AggregatedMetricsResponse struct {
